@@ -1,9 +1,9 @@
 #Dictionary of the services
 jobs = {
-    1: {'Service':'Oil Change','Cost':35},
-    2: {'Service':'Tire rotation','Cost':19}, 
-    3: {'Service':'Car wash','Cost':7},
-    4: {'Service':'Car wax','Cost':12}
+    '1': {'Service':'Oil Change','Cost':35},
+    '2': {'Service':'Tire rotation','Cost':19}, 
+    '3': {'Service':'Car wash','Cost':7},
+    '4': {'Service':'Car wax','Cost':12}
 }
 
 # Updated display string.
@@ -18,8 +18,8 @@ display = """
 print(display)
 
 # Prompt the user for their selections and change it to an interger value
-input1 = int(input("Select first service (number or '-' for no service):\n"))
-input2 = int(input("Select second service (number or '-' for no service):\n"))
+input1 = input("Select first service (number or '-' for no service):\n")
+input2 = input("Select second service (number or '-' for no service):\n")
 
 
 # Function to process the user's service selection.
