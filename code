@@ -1,0 +1,331 @@
+from shared.tools.global import ExtraGlobal
+from shared.tools.thread import async
+from functools import partial
+from shared.tools.logging import Logger
+from time import sleep
+from random import random
+from datetime import datetime
+
+from java.util import Date
+
+
+import re
+import socket
+
+class Routing_Exception(Exception):pass
+class APIError(Routing_Exception):pass
+#ROUTING_SERVER = 'txwcsp11:8085'
+ROUTING_SERVER = 'txwcst11:8103'
+
+OPCSERVER = 'Ignition OPC-UA Server'
+PLCNAME = 'ns=1;s=[L3100ERS2_Autoship_Mezz]'
+
+# Dictionary mapping prefixes to their respective meanings
+DATAIDENT = {
+    '4L': 'coo',
+    'P': 'custPartNumber',
+    '9D': 'datecode',
+    '10D': 'datecode',
+    '11D': 'datecode',
+    '1T': 'lotcode',
+    '31T': 'lotcode',
+    '1P': 'mfgPartNumber',
+    '3Z': 'msl',
+    'ML': 'msl',
+    '11K': 'packlist',
+    '3S': 'packlist',
+    '4S': 'packlist',
+    '5S': 'packlist',
+    '9S': 'packlist',
+    '10K': 'packlist',
+    '12S': 'packlist',
+    '16K': 'packlist',
+    '2S': 'packlist',
+    '3P': 'partNumber',
+    '2P': 'partNumber',
+    'K': 'po',
+    '1K': 'po',
+    '2K': 'po',
+    '4K': 'poLine',
+    'Q': 'quanity',
+    'E': 'rohs',
+    '6D': 'shipDate',
+    'S': 'serialNumber'
+}
+
+#Date Identifiers order of lookup by category
+DATES = ['9D', '10D', '11D', '6D']
+PACKLIST = [ '11K','3S', '4S', '5S', '9S', '10K', '12S', '16K', '2S']
+PO = ['K','1K','2K']
+PART = ['3P','2P']
+
+def request_label(data,payload):
+
+        guid = data['guid']
+
+        routing_endpoint = 'http://%(server)s/ws/v1/route/%(diverter)s/%(ibn)s'
+
+        # Generate the response to the endpoint
+        endpoint = routing_endpoint % {'server': ROUTING_SERVER, 'ibn': ibn, 'diverter': diverter}
+        header = {"Accept":"*/*","wcsSessionId":guid}        
+
+        response = system.net.httpGet(
+                        url=endpoint,
+                        headerValues = header,
+                        throwOnError = False,
+                        )
+
+        results = system.util.jsonDecode(response)
+
+        if results['statusCode'] >0:
+                raise APIError
+
+        data.update({
+        })        
+        return data        
+
+
+def send_to_printer(data):
+        ibn = '123456'
+        barcode = '123456'
+        dest = 'AB'
+        exceptionID = 'error'
+        Reason = 'error'
+
+        #testBit
+        data['Results']=True
+        #data['Results']=False
+        if data['Results']:
+
+                ZPL_File = '^XA^FX^CF0,60^FO25,50^FDTTI Receipt Label^FS^FX^CFA,30^FO25,200^FDIBN#: %s^FS'%(ibn) #1st section
+
+                ZPL_File += '^FX^BY3,2,270^FO25,250^BCN,50,N,N,N,A^FD%s^FS'%(ibn) #2nd section with ibn barcode
+
+                ZPL_File += '^FX^CFA,30^FO25,400^FDTTI Part Number: %s^FS'%(partNumber) #3rd section with part number
+
+                ZPL_File += '^FX^BY3,2,270^FO25,450^BCN,50,N,N,N,A^FD%s^FS^FS'%(partNumber) #4th section with part number barcode.
+
+                ZPL_File += '^FX^CFA,30^FO500,550^FDDestination: %s^FS^XZ'%(dest) #5th section for destination
+
+        else:
+
+                ZPL_file = '^XA^FX^CF0,60^FO25,25^FDTTI Receipt Label^FS^FX^CFA,30^FO25,175^FDExceptionID #: %s^FS'%(exceptionID) #1st Section
+
+                ZPL_file += '^FX^BY3,2,270^FO25,225^BCN,50,N,N,N,A^FD%s^FS'%(exceptionID) # 2nd Section 
+
+                ZPL_file += '^FX^CFA,30^FO25,375^FDException Reason: %s^FS^XZ'%(Reason)
+
+
+        host = '10.37.3.7'
+        port = 9100
+        printer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        try:
+                printer.connect((host, port))
+                printer.sendall(ZPL_File.encode())  # Encoding the string before sending
+                printResult = 1
+        except:
+                printResult = 2
+
+        printer.close()
+
+        printTime = system.date.now()
+
+        data.update({
+                'ZPL_File':ZPL_File,
+                'Print_Time':printTime,
+                'IGN_PrintResult_Returned':printResult,
+                'IGN_Destination_Returned':0
+        })        
+
+        return data
+
+
+def get_payload(data):
+        # Dictionary to hold the extracted data
+        payload = {}
+        payload['OTHER'] = []  # Initialize 'other' as an empty list
+        payload['BARCODE'] = data['Raw_payload']
+        first_packlist_found = False  # Flag to track if the first PACKLIST item has been added
+        first_po_found = False
+        first_part_found = False
+        barcodeList = data['Raw_payload'].split(',')
+
+        for i in range(len(PACKLIST)):
+                for token in barcodeList:
+                        if token.startswith(PACKLIST[i]):
+                                token_value = token.replace(PACKLIST[i], '')
+                                if not first_packlist_found:
+                                        payload[DATAIDENT[PACKLIST[i]]] = token_value
+                                        barcodelist = barcodeList.remove(token)
+                                        first_packlist_found = True
+                                else:
+                                        payload['OTHER'].append({
+                                                'Data_Identifier': PACKLIST[i], 
+                                                'Value': token_value, 
+                                                'Reason': 'Duplicate %s item' %(DATAIDENT[PACKLIST[i]])
+                                                })
+
+                                        barcodelist = barcodeList.remove(token)
+                                break
+        for i in range(len(PO)):
+                for token in barcodeList:
+                        if token.startswith(PO[i]):
+                                token_value = token.replace(PO[i], '')
+                                if not first_packlist_found:
+                                        payload[DATAIDENT[PO[i]]] = token_value
+                                        barcodelist = barcodeList.remove(token)
+                                        first_packlist_found = True
+                                else:
+                                        payload['OTHER'].append({
+                                                'Data_Identifier': PO[i], 
+                                                'Value': token_value, 
+                                                'Reason': 'Duplicate %s item' %(DATAIDENT[PO[i]])
+                                                })
+
+                                        barcodelist = barcodeList.remove(token)
+                                break
+        for i in range(len(PART)):
+                for token in barcodeList:
+                        if token.startswith(PART[i]):
+                                token_value = token.replace(PART[i], '')
+                                if not first_packlist_found:
+                                        payload[DATAIDENT[PO[i]]] = token_value
+                                        barcodelist = barcodeList.remove(token)
+                                        first_packlist_found = True
+                                else:
+                                        payload['OTHER'].append({
+                                                'Data_Identifier': PO[i], 
+                                                'Value': token_value, 
+                                                'Reason': 'Duplicate %s item' %(DATAIDENT[PO[i]])
+                                                })
+
+                                        barcodelist = barcodeList.remove(token)
+                                break
+
+        for token in barcodeList:
+                matched = False  # Flag to check if token matches any key
+                for key, value in DATAIDENT.items():
+                        if token.startswith(key):
+                                token_value = token.replace(key, '')
+                                if key == 'Q':
+                                        if value in payload and isinstance(payload[value], list):
+                                                payload[value].append({"receiptQTY": int(token_value)})
+                                        else:
+                                                payload[value] = [{"receiptQTY": int(token_value)}]
+                                else:
+                                        if value in payload:
+                                                # If it's a list, append the new valu
+                                                if isinstance(payload[value], list):
+                                                        payload[value].append(token_value)
+                                                else:
+                                                        # If it's not a list, convert to list and append new value
+                                                        payload[value] = [payload[value], token_value]
+                                        else:
+                                                # If the key is not in payload, directly assign the value
+                                                payload[value] = token_value
+
+                                matched = True
+                                break  # Break the inner loop once a match is found
+
+                if not matched:
+                        payload['other'].append(token)
+
+        # Parse dimensions and convert to float
+        DIMENSIONS = data['Dimensions'].split(',')
+        payload['Dimensions'] = {
+            'Length': float(DIMENSIONS[0]),
+            'Width': float(DIMENSIONS[1]),
+            'Height': float(DIMENSIONS[2])
+        }
+
+        data.update(payload)
+        system.util.getLogger('TFL_Logs').info('Payload:%s'%(payload))
+
+        return data,payload
+
+@async(name='TFL_GatherData')
+def fastlane_gather_data(source_path):
+        data = {}
+        receiveTime = system.date.now()
+        Get_parent_dest = '/'.join(source_path.split('/')[:-2] + ['Get_Data'])
+        Got_parent_dest = '/'.join(source_path.split('/')[:-2] + ['Got_Data'])
+
+        rawPayload,guid = [
+        qv.value for qv in system.tag.readBlocking([
+                Get_parent_dest + '/' + 'IGN_Barcode_Send',
+                Get_parent_dest + '/' + 'Guid'
+        ])]
+
+        indexID, barcode, Dims = rawPayload.split('|') 
+
+        try:
+                data.update({
+                'IGN_IndexID_Returned':indexID,
+                'Raw_payload':barcode,
+                'Dimensions':Dims
+                })
+                data,payload = get_payload(data)
+                #comment out for bypass api
+                #data.update(request_label(data,payload))
+
+                data.update(send_to_printer(data))
+        except APIError:
+                data.update({
+                'IGN_IndexID_Returned':indexID,
+                'IGN_Destination_Returned':2,
+                'IGN_PrintResult_Returned':2
+                })                
+
+        except:
+                data.update({
+                'IGN_IndexID_Returned':indexID,
+                'IGN_Destination_Returned':2,
+                'IGN_PrintResult_Returned':2
+                })
+
+        ExtraGlobal.stash(data, label = indexID, scope='TFL_Printing', lifespan=600)#10mins
+
+
+
+def verify_print(source_path):
+
+        data = {}
+        receiveTime = system.date.now()
+        Get_parent_dest = '/'.join(source_path.split('/')[:-2] + ['Get_Data'])
+        Got_parent_dest = '/'.join(source_path.split('/')[:-2] + ['Got_Data'])
+
+        rawPayload = [
+        qv.value for qv in system.tag.readBlocking([
+                Get_parent_dest + '/' + 'IGN_Barcode_Send',
+
+        ])]
+
+        indexID, barcode = rawPayload.split('|')
+
+        try:
+
+                verifyData = ExtraGlobal.get(label=indexID, scope='TFL_Printing')
+
+
+                #insert code for verification 
+
+
+
+
+        except:
+                data.update({
+                        'IGN_IndexID_Returned':indexID,
+                        'IGN_Destination_Returned':2,
+                        'IGN_PrintResult_Returned':2
+                })
+
+        itemPaths = [
+                '%sIGN_DestinationReturned[%s]'%(PLCNAME,indexID)
+        ]
+
+        itemValues = [
+                data['IGN_Destination_Returned']
+        ]
+
+        system.opc.writeValues(OPCSERVER, itemPaths, itemValues)
